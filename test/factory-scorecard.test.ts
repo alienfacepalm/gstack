@@ -68,6 +68,29 @@ describe('factory-scorecard: recorded window', () => {
     expect(values.releases).toBe('1 (v1.0.0)');
   });
 
+  test('red-train rate counts each train branch once, red when any of its non-cancelled runs was red (#4767)', () => {
+    // Value: protects=a train's bisect and rebuild runs, which reuse its train/<nonce> branch, count as one train, a red gate stays red after a green rebuild, and a branch with only cancelled runs is left out; fails_when=scorecardRows divides red runs by all non-cancelled train runs again; why_new=#4767, a bisect plus a rebuild added runs to the denominator and could swing the rate without a new train; seam=fixtureSource; no_claim=gated trains, whose prefix refs sit outside the train prefix
+    const fx = fixture();
+    const gateRuns = (fx.responses[Object.keys(fx.responses).find(k => k.includes('/evals.yml/runs?'))!] as { workflow_runs: any[] }).workflow_runs;
+    const base = gateRuns.find(r => r.id === 9002)!;
+    const run = (id: number, branch: string, conclusion: string, hour: number) => ({ ...base, id, head_branch: branch, conclusion, created_at: `2026-10-23T${String(hour).padStart(2, '0')}:00:00Z` });
+    const red = base.head_branch as string;
+    const twice = 'train/gate.train-dddddddddddd-cccccccccccc-dddddd';
+    const cancelled = 'train/gate.train-eeeeeeeeeeee-cccccccccccc-eeeeee';
+    gateRuns.unshift(
+      run(9020, cancelled, 'cancelled', 17),
+      run(9019, twice, 'failure', 16),
+      run(9018, twice, 'timed_out', 15),
+      run(9017, red, 'success', 13),
+      run(9016, red, 'cancelled', 12),
+      run(9015, red, 'success', 11),
+    );
+    const rows = scorecardRows(collectScorecard(fixtureSource(fx, scratch()), options()));
+    const row = rows.find(r => r.id === 'red_train')!;
+    expect(row.value).toBe('67% (2 red of 3 trains; 0 red backstop, 0 red screens)');
+    expect(row.rule).toBe('distinct head branches starting with the train prefix, each counted once; cancelled runs excluded, and a branch with only cancelled runs left out; a train is red when any of its non-cancelled runs did not succeed, even if a later rebuild did');
+  });
+
   test('free runs that ran no shards (reused main pushes) stay out of the free-retry count and its denominator (#3725)', () => {
     // Value: protects=the free-retry rate is read over runs that executed shards only; fails_when=a reused run (no artifacts, reuse job green) counts as a zero-retry run again; why_new=#3725, after #3709 a main push that reuses its PR's run uploads nothing; seam=fixtureSource; no_claim=runs past --max-artifact-runs, which are not read
     const fx = fixture();
